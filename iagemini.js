@@ -454,9 +454,8 @@ Generate ONE final sticker image only.
 // =========================
 // SERVER
 // =========================
+const PORT = process.env.PORT || 3334;
 
-app.listen(3333, () => {
-  console.log(
-    "🔥 Server rodando em http://localhost:3333"
-  );
+app.listen(PORT, () => {
+  console.log(`🔥 Server rodando na porta ${PORT}`);
 });
