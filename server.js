@@ -272,10 +272,10 @@ Use as the FIFA sticker frame.
 PLAYER DATA:
 
 Name: ${name}
-Birth Date: ${birthDate}
-Height: ${height}
-Weight: ${weight}
-Country Team: ${team}
+Nasc: ${birthDate}
+Alt: ${height}
+KG: ${weight}
+Time: ${team}
 
 IMPORTANT PLAYER RULES:
 
