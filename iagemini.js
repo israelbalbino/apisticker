@@ -376,48 +376,63 @@ Generate ONE final sticker image only.
       // FINAL WEBP
       // =========================
 
-      const finalImage = await sharp(
-        imageBuffer
-      )
+    // =========================
+// FINAL WEBP
+// =========================
 
-        .webp({
-          quality: 100,
-        })
-
-        .toBuffer();
-
-      // =========================
-      // CLEANUP
-      // =========================
-
-      if (
-        faceFile?.path &&
-        fs.existsSync(faceFile.path)
-      ) {
-        fs.unlinkSync(faceFile.path);
-      }
-
-      if (
-        preparedPath &&
-        fs.existsSync(preparedPath)
-      ) {
-        fs.unlinkSync(preparedPath);
-      }
-
-      // =========================
-      // RESPONSE
-      // =========================
-
-      res.set(
-        "Content-Type",
-        "image/webp"
-      );
-
-      console.log(
-        "✅ Figurinha criada com IA"
-      );
-
-      return res.send(finalImage);
+const finalImage = await sharp(
+    imageBuffer
+  )
+  
+    .webp({
+      quality: 100,
+    })
+  
+    .toBuffer();
+  
+  // =========================
+  // BASE64
+  // =========================
+  
+  const imageBase64 =
+    finalImage.toString("base64");
+  
+  // =========================
+  // CLEANUP
+  // =========================
+  
+  if (
+    faceFile?.path &&
+    fs.existsSync(faceFile.path)
+  ) {
+    fs.unlinkSync(faceFile.path);
+  }
+  
+  if (
+    preparedPath &&
+    fs.existsSync(preparedPath)
+  ) {
+    fs.unlinkSync(preparedPath);
+  }
+  
+  // =========================
+  // RESPONSE JSON
+  // =========================
+  
+  console.log(
+    "✅ Figurinha criada com IA"
+  );
+  
+  return res.json({
+    success: true,
+  
+    mimeType: "image/webp",
+  
+    imageBase64,
+  
+    imageUrl: `data:image/webp;base64,${imageBase64}`,
+  });
+  
     } catch (err) {
       console.error(
         "❌ ERRO:",
@@ -454,7 +469,7 @@ Generate ONE final sticker image only.
 // =========================
 // SERVER
 // =========================
-const PORT = process.env.PORT || 3334;
+const PORT = process.env.PORT || 3333;
 
 app.listen(PORT, () => {
   console.log(`🔥 Server rodando na porta ${PORT}`);
