@@ -14,6 +14,7 @@ dotenv.config();
 const app = express();
 
 app.use(cors());
+app.use(express.json({ limit: "20mb" }));
 
 app.use(
   helmet({
@@ -30,6 +31,48 @@ const ai = new GoogleGenAI({
 });
 
 // =========================
+// JOBS EM MEMÓRIA
+// =========================
+
+const jobs = new Map();
+
+function createJob() {
+  const jobId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+  jobs.set(jobId, {
+    status: "processing",
+    ready: false,
+    result: null,
+    error: null,
+    createdAt: Date.now(),
+  });
+
+  return jobId;
+}
+
+function updateJob(jobId, data) {
+  const job = jobs.get(jobId);
+
+  if (!job) return;
+
+  jobs.set(jobId, {
+    ...job,
+    ...data,
+  });
+}
+
+// limpa jobs antigos depois de 30 minutos
+setInterval(() => {
+  const now = Date.now();
+
+  for (const [jobId, job] of jobs.entries()) {
+    if (now - job.createdAt > 30 * 60 * 1000) {
+      jobs.delete(jobId);
+    }
+  }
+}, 5 * 60 * 1000);
+
+// =========================
 // MULTER
 // =========================
 
@@ -44,19 +87,15 @@ const upload = multer({
 // FRAMES
 // =========================
 
-const BRAZIL_FRAME_PATH =
-  path.resolve("./frames/frame.png");
-
-const DEFAULT_FRAME_PATH =
-  path.resolve("./frames/framepr.png");
+const BRAZIL_FRAME_PATH = path.resolve("./frames/frame.png");
+const DEFAULT_FRAME_PATH = path.resolve("./frames/framepr.png");
 
 // =========================
 // COUNTRY -> JERSEY STYLE
 // =========================
 
 function getCountryStyle(team) {
-  const country =
-    team?.toLowerCase()?.trim();
+  const country = team?.toLowerCase()?.trim();
 
   const styles = {
     argentina:
@@ -117,10 +156,7 @@ function getCountryStyle(team) {
       "Morocco national football jersey, red and green",
   };
 
-  return (
-    styles[country] ||
-    `${team} national football jersey`
-  );
+  return styles[country] || `${team} national football jersey`;
 }
 
 // =========================
@@ -128,139 +164,102 @@ function getCountryStyle(team) {
 // =========================
 
 function getFramePath(team) {
-  const country =
-    team?.toLowerCase()?.trim();
+  const country = team?.toLowerCase()?.trim();
 
-  // Brasil usa frame.png
-  if (
-    country === "brasil" ||
-    country === "brazil"
-  ) {
+  if (country === "brasil" || country === "brazil") {
     return BRAZIL_FRAME_PATH;
   }
 
-  // Outros países usam framepr.png
   return DEFAULT_FRAME_PATH;
 }
 
 // =========================
-// ROUTE
+// CLEANUP
 // =========================
 
-app.post(
-  "/sticker",
-  upload.single("face"),
+function cleanup(paths = []) {
+  for (const filePath of paths) {
+    if (filePath && fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
+    }
+  }
+}
 
-  async (req, res) => {
-    const faceFile = req.file;
+// =========================
+// START ROUTE
+// =========================
 
-    const {
-      name,
-      birthDate,
-      height,
-      weight,
-      team,
-    } = req.body;
+app.post("/sticker/start", upload.single("face"), async (req, res) => {
+  const faceFile = req.file;
 
-    if (!faceFile) {
-      return res.status(400).json({
-        error: "Envie uma foto",
-      });
+  if (!faceFile) {
+    return res.status(400).json({
+      error: "Envie uma foto",
+    });
+  }
+
+  const jobId = createJob();
+
+  // responde rápido para não dar timeout no Cloudflare
+  res.json({
+    success: true,
+    ready: false,
+    jobId,
+    status: "processing",
+  });
+
+  // roda a geração em segundo plano
+  processStickerJob(jobId, faceFile, req.body);
+});
+
+// =========================
+// GEMINI PROCESS
+// =========================
+
+async function processStickerJob(jobId, faceFile, body) {
+  let preparedPath = null;
+
+  try {
+    const { name, birthDate, height, weight, team } = body;
+
+    const FRAME_PATH = getFramePath(team);
+
+    console.log("🖼️ Frame selecionado:", FRAME_PATH);
+
+    if (!fs.existsSync(FRAME_PATH)) {
+      throw new Error("Frame não encontrado");
     }
 
-    let preparedPath = null;
+    preparedPath = `uploads/prepared-${Date.now()}.png`;
 
-    try {
-      // =========================
-      // SELECT FRAME
-      // =========================
+    await sharp(faceFile.path)
+      .rotate()
+      .resize(1200, 1200, {
+        fit: "inside",
+        withoutEnlargement: true,
+      })
+      .png()
+      .toFile(preparedPath);
 
-      const FRAME_PATH =
-        getFramePath(team);
+    const selfieBase64 = fs.readFileSync(preparedPath).toString("base64");
+    const frameBase64 = fs.readFileSync(FRAME_PATH).toString("base64");
 
-      console.log(
-        "🖼️ Frame selecionado:",
-        FRAME_PATH
-      );
+    const jerseyStyle = getCountryStyle(team);
 
-      // =========================
-      // VALIDATE FRAME
-      // =========================
+    console.log("🌍 Team:", team);
+    console.log("👕 Jersey:", jerseyStyle);
+    console.log("🧠 Gerando figurinha com Gemini...");
 
-      if (!fs.existsSync(FRAME_PATH)) {
-        return res.status(500).json({
-          error:
-            "Frame não encontrado",
-        });
-      }
+    const response = await ai.models.generateContent({
+      model: "gemini-2.5-flash-image",
 
-      // =========================
-      // PREPARE IMAGE
-      // =========================
+      contents: [
+        {
+          role: "user",
 
-      preparedPath = `uploads/prepared-${Date.now()}.png`;
-
-      await sharp(faceFile.path)
-
-        .rotate()
-
-        .resize(1200, 1200, {
-          fit: "inside",
-          withoutEnlargement: true,
-        })
-
-        .png()
-
-        .toFile(preparedPath);
-
-      // =========================
-      // FILES
-      // =========================
-
-      const selfieBase64 = fs
-        .readFileSync(preparedPath)
-        .toString("base64");
-
-      const frameBase64 = fs
-        .readFileSync(FRAME_PATH)
-        .toString("base64");
-
-      // =========================
-      // DYNAMIC JERSEY
-      // =========================
-
-      const jerseyStyle =
-        getCountryStyle(team);
-
-      console.log(
-        "🌍 Team:",
-        team
-      );
-
-      console.log(
-        "👕 Jersey:",
-        jerseyStyle
-      );
-
-      console.log(
-        "🧠 Gerando figurinha IA..."
-      );
-
-      // =========================
-      // GEMINI IMAGE GENERATION
-      // =========================
-
-      const response =
-        await ai.models.generateContent({
-            model: "gemini-3.1-flash-image-preview",
-
-          contents: [
+          parts: [
             {
-              role: "user",
-
-              parts: [
-                {
-                  text: `
+              text: `
 Create an ultra realistic FIFA World Cup sticker.
 
 IMAGE 1:
@@ -324,151 +323,166 @@ FINAL RESULT:
 
 Generate ONE final sticker image only.
 `,
-                },
+            },
 
-                {
-                  inlineData: {
-                    mimeType: "image/png",
-                    data: selfieBase64,
-                  },
-                },
+            {
+              inlineData: {
+                mimeType: "image/png",
+                data: selfieBase64,
+              },
+            },
 
-                {
-                  inlineData: {
-                    mimeType: "image/png",
-                    data: frameBase64,
-                  },
-                },
-              ],
+            {
+              inlineData: {
+                mimeType: "image/png",
+                data: frameBase64,
+              },
             },
           ],
+        },
+      ],
 
-          config: {
-            responseModalities: [
-              "IMAGE",
-            ],
-          },
-        });
+      config: {
+        responseModalities: ["IMAGE"],
+      },
+    });
 
-      // =========================
-      // GET IMAGE
-      // =========================
+    let imageBuffer = null;
 
-      let imageBuffer = null;
+    const parts = response?.candidates?.[0]?.content?.parts || [];
 
-      for (const part of response
-        .candidates[0].content.parts) {
-        if (part.inlineData) {
-          imageBuffer = Buffer.from(
-            part.inlineData.data,
-            "base64"
-          );
-        }
+    for (const part of parts) {
+      if (part.inlineData?.data) {
+        imageBuffer = Buffer.from(part.inlineData.data, "base64");
       }
+    }
 
-      if (!imageBuffer) {
-        throw new Error(
-          "Gemini não retornou imagem"
-        );
-      }
+    if (!imageBuffer) {
+      throw new Error("Gemini não retornou imagem");
+    }
 
-      // =========================
-      // FINAL WEBP
-      // =========================
+    const finalImage = await sharp(imageBuffer)
+      .webp({
+        quality: 100,
+      })
+      .toBuffer();
 
-    // =========================
-// FINAL WEBP
+    const imageBase64 = finalImage.toString("base64");
+    const imageUrl = `data:image/webp;base64,${imageBase64}`;
+
+    cleanup([faceFile.path, preparedPath]);
+
+    updateJob(jobId, {
+      status: "succeeded",
+      ready: true,
+      result: {
+        mimeType: "image/webp",
+        imageBase64,
+        imageUrl,
+      },
+    });
+
+    console.log("✅ Figurinha criada:", jobId);
+  } catch (err) {
+    cleanup([faceFile?.path, preparedPath]);
+
+    updateJob(jobId, {
+      status: "failed",
+      ready: true,
+      error: err?.message || "Erro ao gerar figurinha",
+    });
+
+    console.error("❌ ERRO JOB:", err);
+  }
+}
+
+// =========================
+// STATUS / POLLING
 // =========================
 
-const finalImage = await sharp(
-    imageBuffer
-  )
-  
-    .webp({
-      quality: 100,
-    })
-  
-    .toBuffer();
-  
-  // =========================
-  // BASE64
-  // =========================
-  
-  const imageBase64 =
-    finalImage.toString("base64");
-  
-  // =========================
-  // CLEANUP
-  // =========================
-  
-  if (
-    faceFile?.path &&
-    fs.existsSync(faceFile.path)
-  ) {
-    fs.unlinkSync(faceFile.path);
+app.get("/sticker/status/:jobId", (req, res) => {
+  const { jobId } = req.params;
+
+  const job = jobs.get(jobId);
+
+  if (!job) {
+    return res.status(404).json({
+      success: false,
+      ready: true,
+      error: "Job não encontrado",
+    });
   }
-  
-  if (
-    preparedPath &&
-    fs.existsSync(preparedPath)
-  ) {
-    fs.unlinkSync(preparedPath);
+
+  // ainda processando
+  if (job.status === "processing") {
+    return res.json({
+      success: true,
+      ready: false,
+      jobId,
+      status: "processing",
+      imageUrl: null,
+    });
   }
-  
-  // =========================
-  // RESPONSE JSON
-  // =========================
-  
-  console.log(
-    "✅ Figurinha criada com IA"
-  );
-  
+
+  // erro
+  if (job.status === "failed") {
+    return res.status(500).json({
+      success: false,
+      ready: true,
+      jobId,
+      status: "failed",
+      error: job.error,
+      imageUrl: null,
+    });
+  }
+
+  // SUCESSO -> RETORNA IMAGEM
   return res.json({
     success: true,
-  
-    mimeType: "image/webp",
-  
-    imageBase64,
-  
-    imageUrl: `data:image/webp;base64,${imageBase64}`,
+    ready: true,
+    jobId,
+    status: "succeeded",
+
+    mimeType: job.result.mimeType,
+
+    imageBase64: job.result.imageBase64,
+
+    // AQUI VEM A IMAGEM
+    imageUrl: job.result.imageUrl,
   });
-  
-    } catch (err) {
-      console.error(
-        "❌ ERRO:",
-        err
-      );
+});
 
-      // =========================
-      // CLEANUP ERROR
-      // =========================
+// =========================
+// COMPATIBILIDADE COM ROTA ANTIGA
+// =========================
 
-      if (
-        faceFile?.path &&
-        fs.existsSync(faceFile.path)
-      ) {
-        fs.unlinkSync(faceFile.path);
-      }
+app.post("/sticker", upload.single("face"), async (req, res) => {
+  const faceFile = req.file;
 
-      if (
-        preparedPath &&
-        fs.existsSync(preparedPath)
-      ) {
-        fs.unlinkSync(preparedPath);
-      }
-
-      return res.status(500).json({
-        error:
-          err?.message ||
-          "Erro ao gerar figurinha",
-      });
-    }
+  if (!faceFile) {
+    return res.status(400).json({
+      error: "Envie uma foto",
+    });
   }
-);
+
+  const jobId = createJob();
+
+  res.json({
+    success: true,
+    ready: false,
+    jobId,
+    status: "processing",
+    message:
+      "Geração iniciada. Consulte /sticker/status/" + jobId,
+  });
+
+  processStickerJob(jobId, faceFile, req.body);
+});
 
 // =========================
 // SERVER
 // =========================
+
 const PORT = process.env.PORT || 3333;
 
 app.listen(PORT, () => {
